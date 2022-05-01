@@ -1,7 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using Unity.Jobs;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -69,17 +69,14 @@ public class BesselApproximator : MonoBehaviour
         {
             Debug.Log($"Begin converting: {Time.realtimeSinceStartup:F3}");
             BesselSeriesData redSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
-            ConvertingJob jobR = new ConvertingJob(original, redSeriesData, prec, besselSystem);
-            var jobRHandle = jobR.Schedule(prec.HarmonicCount * prec.RootsCount, 1);
             BesselSeriesData greenSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
-            ConvertingJob jobG = new ConvertingJob(original, greenSeriesData, prec, besselSystem);
-            var jobGHandle = jobG.Schedule(prec.HarmonicCount * prec.RootsCount, 1);
             BesselSeriesData blueSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
-            ConvertingJob jobB = new ConvertingJob(original, blueSeriesData, prec, besselSystem);
-            var jobBHandle = jobB.Schedule(prec.HarmonicCount * prec.RootsCount, 1);
-            jobRHandle.Complete();
-            jobGHandle.Complete();
-            jobBHandle.Complete();
+            ConvertingData jobR = new ConvertingData(original, redSeriesData, prec, besselSystem);
+            ConvertingData jobG = new ConvertingData(original, greenSeriesData, prec, besselSystem);
+            ConvertingData jobB = new ConvertingData(original, blueSeriesData, prec, besselSystem);
+            Parallel.For(0, prec.HarmonicCount * prec.RootsCount, (i) => jobR.Execute(i));
+            Parallel.For(0, prec.HarmonicCount * prec.RootsCount, (i) => jobG.Execute(i));
+            Parallel.For(0, prec.HarmonicCount * prec.RootsCount, (i) => jobB.Execute(i));
             Debug.Log($"End converting: {Time.realtimeSinceStartup:F3}");
 
             return new RGBRadialImageData(redSeriesData, blueSeriesData, greenSeriesData, besselSystem);
@@ -88,28 +85,30 @@ public class BesselApproximator : MonoBehaviour
         {
             Debug.Log($"Begin converting: {Time.realtimeSinceStartup:F3}");
             BesselSeriesData seriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
-            ConvertingJob job = new ConvertingJob(original, seriesData, prec, besselSystem);
-            var jobHandle = job.Schedule(prec.HarmonicCount * prec.RootsCount, 1);
-            jobHandle.Complete();
+            ConvertingData job = new ConvertingData(original, seriesData, prec, besselSystem);
+            Parallel.For(0, prec.HarmonicCount * prec.RootsCount, (i) => job.Execute(i));
             Debug.Log($"End converting: {Time.realtimeSinceStartup:F3}");
 
             return new GrayscaleRadialImageData(seriesData, _besselSystem);
         }
     }
 
-    struct ConvertingJob : IJobParallelFor
+    class ConvertingData
     {
         BesselSystem _besselSystem;
         RadialImagePrecision _prec;
-        Texture2D _original;
         BesselSeriesData _seriesData;
+        Color[] _pixels;
+        int width, height;
 
-        public ConvertingJob(Texture2D original, BesselSeriesData seriesData, RadialImagePrecision prec, BesselSystem besselSystem)
+        public ConvertingData(Texture2D original, BesselSeriesData seriesData, RadialImagePrecision prec, BesselSystem besselSystem)
         {
-            _original = original;
             _seriesData = seriesData;
             _prec = prec;
             _besselSystem = besselSystem;
+            width = original.width;
+            height = original.height;
+            _pixels = original.GetPixels();
         }
 
         public void Execute(int i)
@@ -119,7 +118,7 @@ public class BesselApproximator : MonoBehaviour
             float cosCoef = 0;
             float sinCoef = 0;
             // 2D integral r J cos
-            int rPoints = _prec.IntegralPointsR(n, k, _original.width, _original.height); // 400x400 => 400 * 1.4
+            int rPoints = _prec.IntegralPointsR(n, k, width, height); // 400x400 => 400 * 1.4
             float dr = 1 / (float)rPoints;
             for (int rIndex = 0; rIndex < rPoints; rIndex++)
             {
@@ -127,16 +126,16 @@ public class BesselApproximator : MonoBehaviour
                 float bessel = _besselSystem.Bessel(n, k, r01);
                 bessel /= _besselSystem.GetBesselNorm(n, k);
 
-                int phiPoints = _prec.IntegralPointsPhi(n, k, _original.width, _original.height, r01); // 400x400 => 1 + 8 + 14 + ... + (1 + 6.28 * 400 * 1.4)
-                                                                                                       // 400x400 => ~400 + 2 * pi * sqrt(2) * (400 * (400 - 1)) / 2 ~ pi * sqrt(2) * 400 * 400 > 400 * 400 => can use blurred images
+                int phiPoints = _prec.IntegralPointsPhi(n, k, width, height, r01); // 400x400 => 1 + 8 + 14 + ... + (1 + 6.28 * 400 * 1.4)
+                // 400x400 => ~400 + 2 * pi * sqrt(2) * (400 * (400 - 1)) / 2 ~ pi * sqrt(2) * 400 * 400 > 400 * 400 => can use blurred images
                 float dphi = 2 * Mathf.PI / (float)phiPoints;
                 float impact = r01 * dr * dphi; // [r] dr dphi = weight
                 for (int phiIndex = 0; phiIndex < phiPoints; phiIndex++)
                 {
                     float phi = dphi * phiIndex;
-                    int pixelX = Mathf.FloorToInt(_original.width * (0.5f + 0.5f * r01 * Mathf.Cos(phi)));
-                    int pixelY = Mathf.FloorToInt(_original.height * (0.5f + 0.5f * r01 * Mathf.Sin(phi)));
-                    float color = 2 * _original.GetPixel(pixelX, pixelY).r - 1f;
+                    int pixelX = Mathf.FloorToInt(width * (0.5f + 0.5f * r01 * Mathf.Cos(phi)));
+                    int pixelY = Mathf.FloorToInt(height * (0.5f + 0.5f * r01 * Mathf.Sin(phi)));
+                    float color = 2 * _pixels[pixelY * height + pixelX].r - 1f;
                     cosCoef += color * bessel * Mathf.Cos(n * phi) * impact;
                     sinCoef += color * bessel * Mathf.Sin(n * phi) * impact;
                 }
