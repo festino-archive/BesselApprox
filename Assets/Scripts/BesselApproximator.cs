@@ -26,7 +26,7 @@ public class BesselApproximator : MonoBehaviour
 
         _besselSystem = new BesselSystem(30, 30); // TODO: static system
         RadialImagePrecision prec = new RadialImagePrecision(20, 20);
-        _imageData = Convert(Original, _besselSystem, prec, BesselConvertingMode.RGB);
+        _imageData = Convert(Original, _besselSystem, prec, BesselConvertingMode.GRAYSCALE);
     }
 
     void Update()
