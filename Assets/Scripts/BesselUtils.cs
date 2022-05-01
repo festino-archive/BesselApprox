@@ -26,7 +26,7 @@ public struct RadialImagePrecision
 
 public enum BesselConvertingMode
 {
-    RBG, GRAYSCALE
+    RGB, GRAYSCALE
 }
 
 public struct BesselSeriesData

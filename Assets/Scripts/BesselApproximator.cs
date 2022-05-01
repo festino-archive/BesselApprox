@@ -26,7 +26,7 @@ public class BesselApproximator : MonoBehaviour
 
         _besselSystem = new BesselSystem(30, 30); // TODO: static system
         RadialImagePrecision prec = new RadialImagePrecision(20, 20);
-        _imageData = Convert(Original, _besselSystem, prec, BesselConvertingMode.GRAYSCALE);
+        _imageData = Convert(Original, _besselSystem, prec, BesselConvertingMode.RGB);
     }
 
     void Update()
@@ -65,27 +65,27 @@ public class BesselApproximator : MonoBehaviour
 
     IRadialImageData Convert(Texture2D original, BesselSystem besselSystem, RadialImagePrecision prec, BesselConvertingMode mode)
     {
-        if (mode == BesselConvertingMode.RBG)
+        if (mode == BesselConvertingMode.RGB)
         {
             Debug.Log($"Begin converting: {Time.realtimeSinceStartup:F3}");
             BesselSeriesData redSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
             BesselSeriesData greenSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
             BesselSeriesData blueSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
-            ConvertingData jobR = new ConvertingData(original, redSeriesData, prec, besselSystem);
-            ConvertingData jobG = new ConvertingData(original, greenSeriesData, prec, besselSystem);
-            ConvertingData jobB = new ConvertingData(original, blueSeriesData, prec, besselSystem);
+            ConvertingData jobR = new ConvertingData(ConvertingData.ConvertingChannel.Red, original, redSeriesData, prec, besselSystem);
+            ConvertingData jobG = new ConvertingData(ConvertingData.ConvertingChannel.Green, original, greenSeriesData, prec, besselSystem);
+            ConvertingData jobB = new ConvertingData(ConvertingData.ConvertingChannel.Blue, original, blueSeriesData, prec, besselSystem);
             Parallel.For(0, prec.HarmonicCount * prec.RootsCount, (i) => jobR.Execute(i));
             Parallel.For(0, prec.HarmonicCount * prec.RootsCount, (i) => jobG.Execute(i));
             Parallel.For(0, prec.HarmonicCount * prec.RootsCount, (i) => jobB.Execute(i));
             Debug.Log($"End converting: {Time.realtimeSinceStartup:F3}");
 
-            return new RGBRadialImageData(redSeriesData, blueSeriesData, greenSeriesData, besselSystem);
+            return new RGBRadialImageData(redSeriesData, greenSeriesData, blueSeriesData, besselSystem);
         }
         else
         {
             Debug.Log($"Begin converting: {Time.realtimeSinceStartup:F3}");
             BesselSeriesData seriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
-            ConvertingData job = new ConvertingData(original, seriesData, prec, besselSystem);
+            ConvertingData job = new ConvertingData(ConvertingData.ConvertingChannel.Red, original, seriesData, prec, besselSystem);
             Parallel.For(0, prec.HarmonicCount * prec.RootsCount, (i) => job.Execute(i));
             Debug.Log($"End converting: {Time.realtimeSinceStartup:F3}");
 
@@ -100,8 +100,9 @@ public class BesselApproximator : MonoBehaviour
         BesselSeriesData _seriesData;
         Color[] _pixels;
         int width, height;
+        ConvertingChannel _channel;
 
-        public ConvertingData(Texture2D original, BesselSeriesData seriesData, RadialImagePrecision prec, BesselSystem besselSystem)
+        public ConvertingData(ConvertingChannel channel, Texture2D original, BesselSeriesData seriesData, RadialImagePrecision prec, BesselSystem besselSystem)
         {
             _seriesData = seriesData;
             _prec = prec;
@@ -109,14 +110,15 @@ public class BesselApproximator : MonoBehaviour
             width = original.width;
             height = original.height;
             _pixels = original.GetPixels();
+            _channel = channel;
         }
 
         public void Execute(int i)
         {
             int n = i / _prec.RootsCount;
             int k = i % _prec.RootsCount;
-            float cosCoef = 0;
-            float sinCoef = 0;
+            float cosCoef = 0f;
+            float sinCoef = 0f;
             // 2D integral r J cos
             int rPoints = _prec.IntegralPointsR(n, k, width, height); // 400x400 => 400 * 1.4
             float dr = 1 / (float)rPoints;
@@ -128,20 +130,34 @@ public class BesselApproximator : MonoBehaviour
 
                 int phiPoints = _prec.IntegralPointsPhi(n, k, width, height, r01); // 400x400 => 1 + 8 + 14 + ... + (1 + 6.28 * 400 * 1.4)
                 // 400x400 => ~400 + 2 * pi * sqrt(2) * (400 * (400 - 1)) / 2 ~ pi * sqrt(2) * 400 * 400 > 400 * 400 => can use blurred images
-                float dphi = 2 * Mathf.PI / (float)phiPoints;
+                float dphi = 2f * Mathf.PI / (float)phiPoints;
                 float impact = r01 * dr * dphi; // [r] dr dphi = weight
                 for (int phiIndex = 0; phiIndex < phiPoints; phiIndex++)
                 {
                     float phi = dphi * phiIndex;
                     int pixelX = Mathf.FloorToInt(width * (0.5f + 0.5f * r01 * Mathf.Cos(phi)));
                     int pixelY = Mathf.FloorToInt(height * (0.5f + 0.5f * r01 * Mathf.Sin(phi)));
-                    float color = 2 * _pixels[pixelY * height + pixelX].r - 1f;
+                    int pixelIndex = pixelY * height + pixelX;
+                    float color;
+                    switch (_channel)
+                    {
+                        case ConvertingChannel.Red: color = _pixels[pixelIndex].r; break;
+                        case ConvertingChannel.Green: color = _pixels[pixelIndex].g; break;
+                        case ConvertingChannel.Blue: color = _pixels[pixelIndex].b; break;
+                        default: color = 0f; break;
+                    }
+                    color = 2f * color - 1f;
                     cosCoef += color * bessel * Mathf.Cos(n * phi) * impact;
                     sinCoef += color * bessel * Mathf.Sin(n * phi) * impact;
                 }
             }
             _seriesData.CosFourierCoefficients[n, k] = cosCoef;
             _seriesData.SinFourierCoefficients[n, k] = sinCoef;
+        }
+
+        public enum ConvertingChannel
+        {
+            Red, Green, Blue
         }
     }
 }
