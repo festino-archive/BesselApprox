@@ -6,6 +6,7 @@ public class BesselSystem
     float[,] _zeroes;
     float[,] _norms;
 
+    // TODO static and save-load system for roots, parallel for functions
     public BesselSystem(int maxHarmonic, int rootsNum)
     {
         _bessel = new float[maxHarmonic][];
