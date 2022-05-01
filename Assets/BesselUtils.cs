@@ -42,4 +42,22 @@ public struct BesselSeriesData
         CosFourierCoefficients = new float[harmCount, rootCount];
         SinFourierCoefficients = new float[harmCount, rootCount];
     }
+
+    public float Eval(float r01, float phi, BesselSystem _besselSystem)
+    {
+        float res = 0;
+        for (int harmonic = 0; harmonic < HarmonicCount; harmonic++)
+        {
+            float cos = Mathf.Cos(harmonic * phi);
+            float sin = Mathf.Sin(harmonic * phi);
+            for (int rootIndex = 0; rootIndex < RootsCount; rootIndex++)
+            {
+                float bessel = _besselSystem.Bessel(harmonic, rootIndex, r01);
+                float member = CosFourierCoefficients[harmonic, rootIndex] * cos * bessel;
+                member += SinFourierCoefficients[harmonic, rootIndex] * sin * bessel;
+                res += member;
+            }
+        }
+        return res;
+    }
 }

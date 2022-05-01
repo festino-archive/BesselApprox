@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using Unity.Jobs;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -66,47 +67,82 @@ public class BesselApproximator : MonoBehaviour
     {
         if (mode == BesselConvertingMode.RBG)
         {
-            return new RGBRadialImageData();
+            Debug.Log($"Begin converting: {Time.realtimeSinceStartup:F3}");
+            BesselSeriesData redSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
+            ConvertingJob jobR = new ConvertingJob(original, redSeriesData, prec, besselSystem);
+            var jobRHandle = jobR.Schedule(prec.HarmonicCount * prec.RootsCount, 1);
+            BesselSeriesData greenSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
+            ConvertingJob jobG = new ConvertingJob(original, greenSeriesData, prec, besselSystem);
+            var jobGHandle = jobG.Schedule(prec.HarmonicCount * prec.RootsCount, 1);
+            BesselSeriesData blueSeriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
+            ConvertingJob jobB = new ConvertingJob(original, blueSeriesData, prec, besselSystem);
+            var jobBHandle = jobB.Schedule(prec.HarmonicCount * prec.RootsCount, 1);
+            jobRHandle.Complete();
+            jobGHandle.Complete();
+            jobBHandle.Complete();
+            Debug.Log($"End converting: {Time.realtimeSinceStartup:F3}");
+
+            return new RGBRadialImageData(redSeriesData, blueSeriesData, greenSeriesData, besselSystem);
         }
         else
         {
             Debug.Log($"Begin converting: {Time.realtimeSinceStartup:F3}");
             BesselSeriesData seriesData = new BesselSeriesData(prec.HarmonicCount, prec.RootsCount);
-            for (int n = 0; n < prec.HarmonicCount; n++)
-            {
-                for (int k = 0; k < prec.RootsCount; k++)
-                {
-                    float cosCoef = 0;
-                    float sinCoef = 0;
-                    // 2D integral r J cos
-                    int rPoints = prec.IntegralPointsR(n, k, original.width, original.height); // 400x400 => 400 * 1.4
-                    float dr = 1 / (float)rPoints;
-                    for (int rIndex = 0; rIndex < rPoints; rIndex++)
-                    {
-                        float r01 = dr * (rIndex + 0.5f);
-                        float bessel = besselSystem.Bessel(n, k, r01);
-                        bessel /= _besselSystem.GetBesselNorm(n, k);
+            ConvertingJob job = new ConvertingJob(original, seriesData, prec, besselSystem);
+            var jobHandle = job.Schedule(prec.HarmonicCount * prec.RootsCount, 1);
+            jobHandle.Complete();
+            Debug.Log($"End converting: {Time.realtimeSinceStartup:F3}");
 
-                        int phiPoints = prec.IntegralPointsPhi(n, k, original.width, original.height, r01); // 400x400 => 1 + 8 + 14 + ... + (1 + 6.28 * 400 * 1.4)
-                        // 400x400 => ~400 + 2 * pi * sqrt(2) * (400 * (400 - 1)) / 2 ~ pi * sqrt(2) * 400 * 400 > 400 * 400 => can use blurred images
-                        float dphi = 2 * Mathf.PI / (float)phiPoints;
-                        float impact = r01 * dr * dphi; // [r] dr dphi = weight
-                        for (int phiIndex = 0; phiIndex < phiPoints; phiIndex++)
-                        {
-                            float phi = dphi * phiIndex;
-                            int pixelX = Mathf.FloorToInt(original.width * (0.5f + 0.5f * r01 * Mathf.Cos(phi)));
-                            int pixelY = Mathf.FloorToInt(original.height * (0.5f + 0.5f * r01 * Mathf.Sin(phi)));
-                            float color = 2 * original.GetPixel(pixelX, pixelY).r - 1f;
-                            cosCoef += color * bessel * Mathf.Cos(n * phi) * impact;
-                            sinCoef += color * bessel * Mathf.Sin(n * phi) * impact;
-                        }
-                    }
-                    seriesData.CosFourierCoefficients[n, k] = cosCoef;
-                    seriesData.SinFourierCoefficients[n, k] = sinCoef;
+            return new GrayscaleRadialImageData(seriesData, _besselSystem);
+        }
+    }
+
+    struct ConvertingJob : IJobParallelFor
+    {
+        BesselSystem _besselSystem;
+        RadialImagePrecision _prec;
+        Texture2D _original;
+        BesselSeriesData _seriesData;
+
+        public ConvertingJob(Texture2D original, BesselSeriesData seriesData, RadialImagePrecision prec, BesselSystem besselSystem)
+        {
+            _original = original;
+            _seriesData = seriesData;
+            _prec = prec;
+            _besselSystem = besselSystem;
+        }
+
+        public void Execute(int i)
+        {
+            int n = i / _prec.RootsCount;
+            int k = i % _prec.RootsCount;
+            float cosCoef = 0;
+            float sinCoef = 0;
+            // 2D integral r J cos
+            int rPoints = _prec.IntegralPointsR(n, k, _original.width, _original.height); // 400x400 => 400 * 1.4
+            float dr = 1 / (float)rPoints;
+            for (int rIndex = 0; rIndex < rPoints; rIndex++)
+            {
+                float r01 = dr * (rIndex + 0.5f);
+                float bessel = _besselSystem.Bessel(n, k, r01);
+                bessel /= _besselSystem.GetBesselNorm(n, k);
+
+                int phiPoints = _prec.IntegralPointsPhi(n, k, _original.width, _original.height, r01); // 400x400 => 1 + 8 + 14 + ... + (1 + 6.28 * 400 * 1.4)
+                                                                                                       // 400x400 => ~400 + 2 * pi * sqrt(2) * (400 * (400 - 1)) / 2 ~ pi * sqrt(2) * 400 * 400 > 400 * 400 => can use blurred images
+                float dphi = 2 * Mathf.PI / (float)phiPoints;
+                float impact = r01 * dr * dphi; // [r] dr dphi = weight
+                for (int phiIndex = 0; phiIndex < phiPoints; phiIndex++)
+                {
+                    float phi = dphi * phiIndex;
+                    int pixelX = Mathf.FloorToInt(_original.width * (0.5f + 0.5f * r01 * Mathf.Cos(phi)));
+                    int pixelY = Mathf.FloorToInt(_original.height * (0.5f + 0.5f * r01 * Mathf.Sin(phi)));
+                    float color = 2 * _original.GetPixel(pixelX, pixelY).r - 1f;
+                    cosCoef += color * bessel * Mathf.Cos(n * phi) * impact;
+                    sinCoef += color * bessel * Mathf.Sin(n * phi) * impact;
                 }
             }
-            Debug.Log($"End converting: {Time.realtimeSinceStartup:F3}");
-            return new GrayscaleRadialImageData(seriesData, _besselSystem);
+            _seriesData.CosFourierCoefficients[n, k] = cosCoef;
+            _seriesData.SinFourierCoefficients[n, k] = sinCoef;
         }
     }
 }
